@@ -16,11 +16,10 @@ import {checkForPrivateExports, ReferenceGraph} from '../../entry_point';
 import {LogicalFileSystem, resolve} from '../../file_system';
 import {AbsoluteModuleStrategy, AliasingHost, AliasStrategy, DefaultImportTracker, ImportRewriter, LocalIdentifierStrategy, LogicalProjectStrategy, ModuleResolver, NoopImportRewriter, PrivateExportAliasingHost, R3SymbolsImportRewriter, Reference, ReferenceEmitStrategy, ReferenceEmitter, RelativePathStrategy, UnifiedModulesAliasingHost, UnifiedModulesStrategy} from '../../imports';
 import {IncrementalBuildStrategy, IncrementalDriver} from '../../incremental';
-import {ComponentResolutionRegistry} from '../../incremental/api';
 import {generateAnalysis, IndexedComponent, IndexingContext} from '../../indexer';
 import {ComponentResources, CompoundMetadataReader, CompoundMetadataRegistry, DtsMetadataReader, InjectableClassRegistry, LocalMetadataRegistry, MetadataReader, ResourceRegistry} from '../../metadata';
 import {ModuleWithProvidersScanner} from '../../modulewithproviders';
-import {SemanticDepGraphAdapter} from '../../ngmodule_semantics';
+import {SemanticSymbol} from '../../ngmodule_semantics/src/api';
 import {PartialEvaluator} from '../../partial_evaluator';
 import {NOOP_PERF_RECORDER, PerfRecorder} from '../../perf';
 import {DeclarationNode, isNamedClassDeclaration, TypeScriptReflectionHost} from '../../reflection';
@@ -890,12 +889,8 @@ export class NgCompiler {
         new LocalModuleScopeRegistry(localMetaReader, depScopeReader, refEmitter, aliasingHost);
     const scopeReader: ComponentScopeReader = scopeRegistry;
     const semanticDepGraphUpdater = this.incrementalDriver.getSemanticDepGraphUpdater();
-    const semanticDepRegistry = new SemanticDepGraphAdapter(semanticDepGraphUpdater);
-    const metaRegistry =
-        new CompoundMetadataRegistry([localMetaRegistry, scopeRegistry, semanticDepRegistry]);
+    const metaRegistry = new CompoundMetadataRegistry([localMetaRegistry, scopeRegistry]);
     const injectableRegistry = new InjectableClassRegistry(reflector);
-
-    const componentResolutionRegistry: ComponentResolutionRegistry = semanticDepGraphUpdater;
 
     const metaReader = new CompoundMetadataReader([localMetaReader, dtsReader]);
     const typeCheckScopeRegistry = new TypeCheckScopeRegistry(scopeReader, metaReader);
@@ -935,7 +930,7 @@ export class NgCompiler {
         CycleHandlingStrategy.Error;
 
     // Set up the IvyCompilation, which manages state for the Ivy transformer.
-    const handlers: DecoratorHandler<unknown, unknown, unknown>[] = [
+    const handlers: DecoratorHandler<unknown, unknown, SemanticSymbol|null, unknown>[] = [
       new ComponentDecoratorHandler(
           reflector, evaluator, metaRegistry, metaReader, scopeReader, scopeRegistry,
           typeCheckScopeRegistry, resourceRegistry, isCore, this.resourceManager,
@@ -944,9 +939,7 @@ export class NgCompiler {
           this.options.enableI18nLegacyMessageIdFormat !== false, this.usePoisonedData,
           this.options.i18nNormalizeLineEndingsInICUs, this.moduleResolver, this.cycleAnalyzer,
           cycleHandlingStrategy, refEmitter, defaultImportTracker, this.incrementalDriver.depGraph,
-          injectableRegistry,
-          componentResolutionRegistry,
-          this.closureCompilerEnabled),
+          injectableRegistry, semanticDepGraphUpdater, this.closureCompilerEnabled),
 
       // TODO(alxhub): understand why the cast here is necessary (something to do with `null`
       // not being assignable to `unknown` when wrapped in `Readonly`).
@@ -955,7 +948,7 @@ export class NgCompiler {
             reflector, evaluator, metaRegistry, scopeRegistry, metaReader,
             defaultImportTracker, injectableRegistry, isCore, this.closureCompilerEnabled,
             compileUndecoratedClassesWithAngularFeatures,
-        ) as Readonly<DecoratorHandler<unknown, unknown, unknown>>,
+        ) as Readonly<DecoratorHandler<unknown, unknown, SemanticSymbol | null,unknown>>,
       // clang-format on
       // Pipe handler must be before injectable handler in list so pipe factories are printed
       // before injectable factories (so injectable factories can delegate to them)
@@ -973,7 +966,8 @@ export class NgCompiler {
 
     const traitCompiler = new TraitCompiler(
         handlers, reflector, this.perfRecorder, this.incrementalDriver,
-        this.options.compileNonExportedClasses !== false, compilationMode, dtsTransforms);
+        this.options.compileNonExportedClasses !== false, compilationMode, dtsTransforms,
+        semanticDepGraphUpdater);
 
     const templateTypeChecker = new TemplateTypeCheckerImpl(
         this.tsProgram, this.typeCheckingProgramStrategy, traitCompiler,
